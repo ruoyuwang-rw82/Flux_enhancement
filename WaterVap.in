@@ -1,0 +1,89 @@
+variable        t equal 353.15 # 80 degree
+variable        boxx equal 80
+variable        boxy equal 80
+
+units           real 
+dimension       3 
+boundary        p p f
+processors      * * 1
+atom_style      full
+neighbor        2.0 bin 
+neigh_modify    delay 0 every 1 check yes one 4000
+region          box block 0 ${boxx} 0 ${boxy} -100 500 units box
+create_box      4 box bond/types 1 angle/types 1 &
+                extra/bond/per/atom 2 extra/angle/per/atom 1 extra/special/per/atom 2
+
+mass            1 15.9994 # O in water
+mass            2 1.008 # H in water
+mass            3 12 # channel atoms
+mass            4 12 # channel atoms (lyophobic)
+
+pair_style      lj/cut/coul/long 12
+pair_modify     mix arithmetic
+kspace_style    pppm 1.0e-4
+kspace_modify   slab 1.5 fftbench yes
+pair_coeff      1 1 0.1553 3.166
+pair_coeff      2 2 0.0 1.0
+pair_coeff      1 2 0.0 1.0
+pair_coeff      3 3 0.2 3.55
+pair_coeff      4 4 0.002 3.55
+bond_style      harmonic
+bond_coeff      1 0 1.0
+angle_style     harmonic
+angle_coeff     1 0 109.47
+
+# create bottom
+lattice         sc 2.8
+region          botregion block INF INF INF INF -76 -70 units box
+create_atoms 	3 region botregion
+group           bot region botregion
+fix             botfix bot setforce 0.0 0.0 0.0
+
+# create water
+molecule        water water_spce.mol
+variable        boxxb equal v_boxx-2
+variable        boxyb equal v_boxy-2
+region          watregion block 2 ${boxxb} 2 ${boxyb} -60 -10 units box      
+lattice         sc 2.5
+variable        watdensity equal 1 # g/cm^3
+variable        waterN equal round((lx*ly*80)*v_watdensity/40*6.022e23/1e24)
+create_atoms    0 region watregion mol water 943288
+group           Wat type 1 2
+group           WatO type 1
+variable        deleteN equal count(WatO)-v_waterN
+delete_atoms    random count ${deleteN} yes WatO NULL 623987 mol yes
+reset_atoms     id
+fix rigid       all shake 0.0001 20 0 b 1 a 1
+group           Wat type 1 2
+group           WatO type 1
+velocity        Wat create ${t} 524532 loop local dist gaussian
+compute         Wattemp Wat temp 
+fix             ensem Wat nvt temp ${t} ${t} 100.0 
+fix             zwalls all wall/reflect zlo EDGE zhi EDGE
+
+# change water atoms' charge
+variable        chargefactor equal 1.0
+variable        waterOq equal -0.8476*${chargefactor}
+variable        waterHq equal 0.4238*${chargefactor}
+set             type 1 charge ${waterOq}
+set             type 2 charge ${waterHq}
+
+# vapor count and profile
+variable        vaporzlo equal 50
+region          vaporregion block INF INF INF INF ${vaporzlo} INF units box
+# count
+variable        vaporN equal count(WatO,vaporregion)
+variable        vaporD equal count(WatO,vaporregion)/(lx*ly*(zhi-v_vaporzlo))
+fix             vaporN all ave/time 100 10000 1000000 v_vaporN v_vaporD file vaporN.txt
+# profile
+compute         chunkWat WatO chunk/atom bin/1d z lower 1 units box
+fix             chunkWat WatO ave/chunk 100 10000 1000000 chunkWat density/number ave one file Watprofile.txt
+
+# output
+dump            1 all custom 1000000 dump_all.lammpstrj element x y z id
+dump_modify     1 element O H C Si
+thermo_style    custom step spcpu c_Wattemp
+thermo          1000
+
+# run
+run             20000000
